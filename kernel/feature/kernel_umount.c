@@ -21,6 +21,15 @@
 #include "runtime/ksud_boot.h"
 #include "ksu.h"
 #include "compat/kernel_compat.h"
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+extern struct work_struct susfs_extra_works;
+static inline void ksu_handle_extra_susfs_work(void)
+{
+	if (!work_pending(&susfs_extra_works))
+		schedule_work(&susfs_extra_works);
+}
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 static bool ksu_kernel_umount_enabled = true;
 
@@ -119,21 +128,6 @@ static void umount_tw_func(struct callback_head *cb)
 
 int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
 {
-	struct umount_tw *tw;
-
-	// if there isn't any module mounted, just ignore it!
-	if (!ksu_module_mounted) {
-		return 0;
-	}
-
-	if (!ksu_kernel_umount_enabled) {
-		return 0;
-	}
-
-	if (!ksu_cred) {
-		return 0;
-	}
-
     // There are 6 scenarios:
     // 1. Normal app: zygote -> appuid
     // 2. Isolated process forked from zygote: zygote -> isolated_process
@@ -158,20 +152,34 @@ int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
 		pr_info("handle umount ignore non zygote child: %d\n", current->pid);
 		return 0;
 	}
-	// umount the target mnt
-	pr_info("handle umount for uid: %d, pid: %d\n", new_uid, current->pid);
 
-	tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
-	if (!tw)
-		return 0;
+	// this is a zygote spawned app process; the umount itself is optional, it
+	// only happens when the feature is on and we actually have module mounts.
+	// ksu_cred is required because umount_tw_func() overrides creds with it.
+	if (ksu_kernel_umount_enabled && ksu_module_mounted && ksu_cred) {
+		struct umount_tw *tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
 
-	tw->cb.func = umount_tw_func;
+		if (tw) {
+			// umount the target mnt
+			pr_info("handle umount for uid: %d, pid: %d\n", new_uid,
+				current->pid);
 
-	int err = task_work_add(current, &tw->cb, TWA_RESUME);
-	if (err) {
-		kfree(tw);
-		pr_warn("unmount add task_work failed\n");
+			tw->cb.func = umount_tw_func;
+
+			if (task_work_add(current, &tw->cb, TWA_RESUME)) {
+				kfree(tw);
+				pr_warn("unmount add task_work failed\n");
+			}
+		}
 	}
+
+#ifdef CONFIG_KSU_SUSFS
+	// Mark proc for susfs hiding and trigger sus_path_loop. Must be independent of
+	// ksu_kernel_umount_enabled/ksu_module_mounted to avoid breaking hiding
+	// when umount is disabled or no module is mounted.
+	susfs_set_current_proc_umounted();
+	ksu_handle_extra_susfs_work();
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 	return 0;
 }

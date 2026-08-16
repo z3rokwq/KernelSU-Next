@@ -2,6 +2,9 @@
 #include <linux/fs.h>
 #include <linux/namei.h>
 #include <linux/printk.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 #include "policy/allowlist.h"
 #include "klog.h" // IWYU pragma: keep
@@ -69,4 +72,8 @@ void on_boot_completed(void)
     pr_info("on_boot_completed!\n");
     track_throne(true);
     ksu_avc_spoof_late_init();
+#ifdef CONFIG_KSU_SUSFS
+    // /data/media/0 is ready by now; start watching for /sdcard decryption
+    susfs_start_sdcard_monitor_fn();
+#endif // #ifdef CONFIG_KSU_SUSFS
 }
