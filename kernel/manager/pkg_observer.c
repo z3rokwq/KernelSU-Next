@@ -12,6 +12,9 @@
 #include "throne_tracker.h"
 #include "runtime/ksud_boot.h"
 #include "compat/kernel_compat.h" // TWA_RESUME on < 5.7
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 #define MASK_SYSTEM (FS_CREATE | FS_MOVE | FS_EVENT_ON_CHILD)
 #define MASK_ADB (FS_CLOSE_WRITE | FS_MOVE | FS_DELETE | FS_EVENT_ON_CHILD)
@@ -42,6 +45,9 @@ static void ksu_track_throne_tw_func(struct callback_head *cb)
 	if (current->flags & PF_EXITING)
 		return;
 	track_throne(false);
+#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+	susfs_parse_priority_app_strings();
+#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 }
 
 static void ksu_defer_track_throne(void)

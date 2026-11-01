@@ -5,6 +5,9 @@
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
 #include <linux/workqueue.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 #include "preinit/preinit.h"
 #include "policy/allowlist.h"
@@ -133,6 +136,10 @@ int __init kernelsu_init(void)
         pr_err("prepare cred failed!\n");
         return -ENOSYS;
     }
+
+#ifdef CONFIG_KSU_SUSFS
+	susfs_init();
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 	ksu_feature_init();
 
