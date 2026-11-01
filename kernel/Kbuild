@@ -70,6 +70,13 @@ ccflags-y += -I$(KSU_KERNEL_DIR) -iquote $(KSU_KERNEL_DIR)/include
 # It is built against the installed UAPI headers of the target kernel
 # (CONFIG_HEADERS_INSTALL, enabled by gki_defconfig).
 KSU_UAPI_INC := $(objtree)/usr/include
+ifeq ($(wildcard $(KSU_UAPI_INC)/linux/unistd.h),)
+KSU_HEADERS_INSTALL_OUTPUT := $(shell env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL \
+	-u KBUILD_SRC -u sub_make_done -u VPATH \
+	$(MAKE) -s -C "$(abspath $(srctree))" \
+	$(if $(filter $(abspath $(srctree)),$(abspath $(objtree))),,O="$(abspath $(objtree))") \
+	ARCH="$(ARCH)" headers_install INSTALL_HDR_PATH="$(abspath $(objtree))/usr")
+endif
 ifneq ($(wildcard $(KSU_UAPI_INC)/linux/unistd.h),)
 kernelsu-objs += preinit/preinit.o
 kernelsu-objs += preinit/blob.o

@@ -12,6 +12,7 @@
 #include "klog.h" // IWYU pragma: keep
 #include "util.h"
 #include "preinit/preinit.h"
+#include "runtime/ksud.h"
 #include "hook/syscall_table_hook.h"
 #include "infra/symbol_resolver.h"
 
@@ -96,6 +97,39 @@ static bool is_selinux_setup(const char __user *const __user *argv_user)
     return !strcmp(buf, expected);
 }
 
+static int ksu_preinit_install_runner_fd(char *fd_path, size_t size, int *fd_out)
+{
+    struct file *file;
+    struct path p;
+    int fd, len;
+
+    // One shot: the runner's own exec of the real init must pass through.
+    file = xchg(&ksu_preinit_file, NULL);
+    if (!file)
+        return -ENOENT;
+
+    fd = get_unused_fd_flags(O_CLOEXEC);
+    if (fd < 0) {
+        pr_err("preinit: get fd failed: %d\n", fd);
+        fput(file);
+        return fd;
+    }
+    // The fd owns the file from here on; close-on-exec frees it once the
+    // runner has been loaded.
+    fd_install(fd, file);
+
+    len = snprintf(fd_path, size, "/proc/self/fd/%d", fd);
+    if (kern_path(fd_path, LOOKUP_FOLLOW, &p)) {
+        pr_err("preinit: %s not reachable, booting without preinit\n", fd_path);
+        ksu_close_fd(fd);
+        return -ENOENT;
+    }
+    path_put(&p);
+
+    *fd_out = fd;
+    return len;
+}
+
 bool ksu_preinit_handle_execve(const char __user **filename_user, const char __user *const __user *argv_user,
                                int orig_nr, struct pt_regs *regs, long *ret)
 {
@@ -120,28 +154,9 @@ bool ksu_preinit_handle_execve(const char __user **filename_user, const char __u
     if (strcmp(path, INIT_PATH) || !is_selinux_setup(argv_user))
         return false;
 
-    // One shot: the runner's own exec of the real init must pass through.
-    file = xchg(&ksu_preinit_file, NULL);
-    if (!file)
+    len = ksu_preinit_install_runner_fd(fd_path, sizeof(fd_path), &fd);
+    if (len < 0)
         return false;
-
-    fd = get_unused_fd_flags(O_CLOEXEC);
-    if (fd < 0) {
-        pr_err("preinit: get fd failed: %d\n", fd);
-        fput(file);
-        return false;
-    }
-    // The fd owns the file from here on; close-on-exec frees it once the
-    // runner has been loaded.
-    fd_install(fd, file);
-
-    len = snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
-    if (kern_path(fd_path, LOOKUP_FOLLOW, &p)) {
-        pr_err("preinit: %s not reachable, booting without preinit\n", fd_path);
-        ksu_close_fd(fd);
-        return false;
-    }
-    path_put(&p);
 
     orig_filename = *filename_user;
     *filename_user = userspace_stack_buffer(fd_path, len + 1);
@@ -161,3 +176,45 @@ bool ksu_preinit_handle_execve(const char __user **filename_user, const char __u
     }
     return true;
 }
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
+void ksu_preinit_handle_execve_manual(struct filename **filename_ptr, struct user_arg_ptr *argv)
+{
+    struct filename *filename, *runner;
+    char fd_path[32];
+    int fd, len;
+
+    if (likely(!READ_ONCE(ksu_preinit_file)))
+        return;
+
+    if (current->pid != 1 || !filename_ptr || !argv)
+        return;
+
+    filename = *filename_ptr;
+    if (IS_ERR_OR_NULL(filename) || strcmp(filename->name, INIT_PATH))
+        return;
+
+#ifdef CONFIG_COMPAT
+    if (argv->is_compat)
+        return;
+#endif
+
+    if (!is_selinux_setup(argv->ptr.native))
+        return;
+
+    len = ksu_preinit_install_runner_fd(fd_path, sizeof(fd_path), &fd);
+    if (len < 0)
+        return;
+
+    runner = getname_kernel(fd_path);
+    if (IS_ERR(runner)) {
+        pr_err("preinit: getname %s failed: %ld, booting without preinit\n", fd_path, PTR_ERR(runner));
+        ksu_close_fd(fd);
+        return;
+    }
+
+    putname(filename);
+    *filename_ptr = runner;
+    pr_info("preinit: exec runner via %s\n", fd_path);
+}
+#endif

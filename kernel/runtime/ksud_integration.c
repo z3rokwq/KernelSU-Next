@@ -45,6 +45,7 @@
 #include "selinux/selinux.h"
 #include "policy/feature.h"
 #include "compat/kernel_compat.h"
+#include "preinit/preinit.h"
 
 static const char KERNEL_SU_RC[] =
 	"\n"
@@ -305,6 +306,13 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
 		return 0;
 	}
 
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	if (unlikely(current->pid == 1)) {
+		ksu_preinit_handle_execve_manual(filename_ptr, argv);
+		filename = *filename_ptr;
+	}
+#endif
+
 	if (unlikely(!memcmp(filename->name, system_bin_init,
 				sizeof(system_bin_init) - 1) &&
 			argv)) {
@@ -312,6 +320,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
 		if (!init_second_stage_executed &&
 		    check_argv(*argv, 1, "second_stage", buf, sizeof(buf))) {
 			pr_info("/system/bin/init second_stage executed\n");
+			ksu_preinit_release();
 			struct callback_head *cb = kzalloc(sizeof(*cb), GFP_ATOMIC);
 			if (cb) {
 				cb->func = ksu_initialize_selinux_tw_func;
@@ -379,6 +388,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
 		if (check_argv(*argv, 1, "-Xzygote", buf, sizeof(buf))) {
 			pr_info("exec zygote, /data prepared, second_stage: %d\n",
 				init_second_stage_executed);
+			ksu_preinit_release();
 			rcu_read_lock();
 			struct task_struct *init_task =
 				rcu_dereference(current->real_parent);
